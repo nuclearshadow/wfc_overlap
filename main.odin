@@ -3,73 +3,189 @@ package wfc_overlap
 import rl "vendor:raylib"
 import "core:fmt"
 import "core:strings"
+import "core:slice"
+import "core:math/rand"
+import "core:time"
 
 PIXEL_SCALE :: 10
-OUTPUT_WIDTH :: 40
-OUTPUT_HEIGHT :: 40
+OUTPUT_WIDTH :: 50
+OUTPUT_HEIGHT :: 50
 
 TILE_SIZE :: 3
 
-Tile :: struct {
-    pixels: [TILE_SIZE * TILE_SIZE]rl.Color,
-    adjacencies: []^Tile,
+Direction :: enum {
+    UP,
+    RIGHT,
+    DOWN,
+    LEFT,
 }
 
-tile_from_image :: proc(x, y: int, image_pixels: [^]rl.Color, image_width, image_height: int) -> Tile {
-    tile: Tile = {}
+dir_vecs := [Direction][2]int{
+    .UP    = {  0, -1 },
+    .RIGHT = {  1,  0 },
+    .DOWN  = {  0,  1 },
+    .LEFT  = { -1,  0 },
+}
 
-    for i in 0..<TILE_SIZE {
-        for j in 0..<TILE_SIZE {
-            ix := (x + j) % image_width
-            iy := (y + i) % image_height
-            fmt.printf("(%d, %d) ", ix, iy)
-            tile.pixels[i * TILE_SIZE + j] = image_pixels[iy * image_width + ix]
+Cell :: struct {
+    possible_tiles: [dynamic]^Tile,
+    collapsed: bool,
+    visited: bool,
+}
+
+Board :: struct {
+    width, height: int,
+    cells: []Cell
+}
+
+make_board :: proc(tiles: []Tile, width, height: int) -> (board: Board) {
+    board.cells = make([]Cell, width * height)
+    board.width = width
+    board.height = height
+    for &cell in board.cells {
+        using cell
+        possible_tiles = make(type_of(possible_tiles), len(tiles))
+        for &tile, i in tiles {
+            possible_tiles[i] = &tile
         }
     }
-    fmt.println()
-    return tile
+    return
 }
 
-create_tiles :: proc(image: rl.Image) -> []Tile {
-    tiles: []Tile = make([]Tile, image.width * image.height)
-    image_pixels := rl.LoadImageColors(image)
-    defer rl.UnloadImageColors(image_pixels)
-
-    for i in 0..<len(tiles) {
-        tiles[i] = tile_from_image(i % auto_cast image.width, i / auto_cast image.width, image_pixels, auto_cast image.width, auto_cast image.height)
+delete_board :: proc(board: Board) {
+    for &cell in board.cells {
+        delete(cell.possible_tiles)
     }
-
-    return tiles
+    delete(board.cells)
 }
 
-delete_tiles :: proc(tiles: []Tile) {
-    delete(tiles)
+cell_entropy :: proc(cell: Cell) -> int {
+    return len(cell.possible_tiles)
 }
 
-draw_tile :: proc(tile: Tile, x, y: i32) {
-    for i in 0..<i32(TILE_SIZE) {
-        for j in 0..<i32(TILE_SIZE) {
-            rl.DrawRectangle(x + j * PIXEL_SCALE, y + i * PIXEL_SCALE, PIXEL_SCALE, PIXEL_SCALE, tile.pixels[i * TILE_SIZE + j])
+cell_collapse :: proc(cell: ^Cell) {
+    tile := rand.choice(cell.possible_tiles[:])
+    clear(&cell.possible_tiles)
+    append(&cell.possible_tiles, tile)
+}
+
+cell_reduce_entropy :: proc(cell: ^Cell, from_adj: []^Tile) {
+    if cell.collapsed || cell.visited { return }
+    #reverse for tile, i in cell.possible_tiles {
+        if !slice.contains(from_adj, tile) {
+            unordered_remove(&cell.possible_tiles, i)
+        }
+    }
+}
+
+cells_propogate :: proc(board: Board, x, y, depth: int) {
+    MAX_DEPTH :: 10
+    @(static) tiles: [dynamic]^Tile
+    if depth > MAX_DEPTH { return }
+    cell := &board.cells[y * board.width + x]
+    if cell.collapsed || cell.visited { return }
+    cell.visited = true
+    // fmt.println(x, y)
+    for dir in Direction {
+        cx := x + dir_vecs[dir].x
+        cy := y + dir_vecs[dir].y
+        if cx < 0 || cy < 0 || cx >= board.width || cy >= board.height { continue }
+        clear(&tiles)
+        for tile in cell.possible_tiles {
+            append(&tiles, ..tile.adjacencies[dir][:])
+        }
+        cell_reduce_entropy(&board.cells[cy * board.width + cx], tiles[:])
+        // cells_propogate(board, cx, cy, depth + 1)
+    }
+    for dir in Direction {
+        cx := x + dir_vecs[dir].x
+        cy := y + dir_vecs[dir].y
+        if cx < 0 || cy < 0 || cx >= board.width || cy >= board.height { continue }
+        cells_propogate(board, cx, cy, depth + 1)
+    }
+}
+
+wave_function_collapse :: proc(board: Board) -> bool {
+    min_entropy_cell: ^Cell
+    found_cell := false
+    min_cell_index := -1
+    for &cell, i in board.cells {
+        cell.visited = false
+        if cell.collapsed {
+            continue
+        }
+        if !found_cell {
+            min_entropy_cell = &cell
+            min_cell_index = i
+            found_cell = true
+        } else if cell_entropy(cell) < cell_entropy(min_entropy_cell^) {
+            min_entropy_cell = &cell
+            min_cell_index = i
+        }
+    }
+    if !found_cell {
+        return true
+    }
+    // fmt.println("before collapse", min_entropy_cell)
+    if len(min_entropy_cell.possible_tiles) == 0 {
+        return false
+    }
+    cell_collapse(min_entropy_cell)
+    // fmt.println("after collapse", min_entropy_cell)
+    cells_propogate(board, min_cell_index % board.width, min_cell_index / board.width, 0)
+    // fmt.println("after propogate", min_entropy_cell)
+    min_entropy_cell.collapsed = true
+    return true
+}
+
+draw_board :: proc(board: Board, x, y: i32) {
+    for i in 0..<board.height {
+        for j in 0..<board.width {
+            cell := board.cells[i * board.width + j]
+            if cell.collapsed {
+                // fmt.println(cell)
+                rl.DrawRectangle(x + PIXEL_SCALE*i32(j), 
+                    y + PIXEL_SCALE*i32(i),
+                    PIXEL_SCALE,
+                    PIXEL_SCALE,
+                    cell.possible_tiles[0].pixels[5],
+                )
+            }
         }
     }
 }
 
 main :: proc() {
+    rand.reset(cast(u64)time.to_unix_nanoseconds(time.now()))
+    // rand.reset(9)
     using rl
     InitWindow(800, 600, "Wave Function Collapse")
     defer CloseWindow()
+    SetTargetFPS(60)
+    SetWindowState(ConfigFlags{ .WINDOW_RESIZABLE })
 
-    image := LoadImage("samples/City.png")
+    image := LoadImage("samples/MoreFlowers.png")
     defer UnloadImage(image)
     image_texture := LoadTextureFromImage(image)
     defer UnloadTexture(image_texture)
-    image_pixels := LoadImageColors(image)
-    defer UnloadImageColors(image_pixels)
-
-    tiles := create_tiles(image)
+    
+    tiles := make_tiles(image)
     defer delete_tiles(tiles)
 
+    board := make_board(tiles, OUTPUT_WIDTH, OUTPUT_HEIGHT)
+    defer delete_board(board)
+
     for !WindowShouldClose() {
+        window_width := GetRenderWidth()
+        if !wave_function_collapse(board) {
+            delete_board(board)
+            board = make_board(tiles, OUTPUT_WIDTH, OUTPUT_HEIGHT)
+        }
+        collapsed := slice.reduce(board.cells, 0, proc(count: int, cell: Cell) -> int {
+            return count + 1 if cell.collapsed else count
+        })
+        // fmt.println("Collapsed count:", collapsed)
+
         BeginDrawing()
         ClearBackground(BLACK)
 
@@ -80,15 +196,27 @@ main :: proc() {
         DrawTexturePro(image_texture, sample_source_rect, sample_dest_rect, {0, 0}, 0, WHITE)
         DrawRectangleLinesEx(sample_dest_rect, 1, WHITE)
 
-        TILE_ORIGIN :: [2]f32{ 100, PADDING }
+        output_x := window_width - (OUTPUT_WIDTH * PIXEL_SCALE) - PADDING
+        draw_board(board, output_x, PADDING)
+        DrawRectangleLines(output_x, PADDING, OUTPUT_WIDTH * PIXEL_SCALE, OUTPUT_HEIGHT * PIXEL_SCALE, WHITE)
 
-        for i in 0..<image.width {
-            for j in 0..<image.height {
-                TILES_OFFSET :: 200
-                draw_tile(tiles[i * image.width + j], j * (TILE_SIZE * PIXEL_SCALE + PADDING) + TILES_OFFSET + PADDING, i * (TILE_SIZE * PIXEL_SCALE + PADDING) + PADDING)
-                DrawRectangleLines(j * (TILE_SIZE * PIXEL_SCALE + PADDING) + TILES_OFFSET + PADDING, i * (TILE_SIZE * PIXEL_SCALE + PADDING) + PADDING, TILE_SIZE * PIXEL_SCALE, TILE_SIZE * PIXEL_SCALE, WHITE)
-            }
-        }
+        // Debug Drawing
+        // ------------------------------------------------------------------------------------------------------
+        // TILES_OFFSET :: 200
+        // INDEX :: 5
+        // draw_tile(tiles[INDEX], TILES_OFFSET, PADDING)
+        // for dir, i in Direction {
+        //     for adj, j in tiles[INDEX].adjacencies[dir] {
+        //         draw_tile(adj^, TILES_OFFSET + (PIXEL_SCALE*TILE_SIZE + PADDING) * i32(j), 2*PADDING + PIXEL_SCALE*TILE_SIZE + (PIXEL_SCALE*TILE_SIZE + PADDING)*i32(i))
+        //     }
+        // }
+        
+        // for i in 0..<image.width {
+        //     for j in 0..<image.height {
+        //         draw_tile(tiles[i * image.width + j], j * (TILE_SIZE * PIXEL_SCALE + PADDING) + TILES_OFFSET + PADDING, i * (TILE_SIZE * PIXEL_SCALE + PADDING) + PADDING)
+        //     }
+        // }
+        // ------------------------------------------------------------------------------------------------------
 
         EndDrawing()
     }
