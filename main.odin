@@ -68,6 +68,7 @@ cell_entropy :: proc(cell: Cell) -> f32 {
         total_freq += freq
         freq_log_sum += freq * math.log2(freq)
     }
+    if total_freq == 0 { return 0 }
     return math.log2(total_freq) - freq_log_sum / total_freq
 }
 
@@ -99,7 +100,7 @@ cell_reduce_entropy :: proc(cell: ^Cell, from_adj: []^Tile) {
 }
 
 cells_propogate :: proc(board: Board, x, y, depth: int) {
-    MAX_DEPTH :: 10
+    MAX_DEPTH :: 50
     @(static) tiles: [dynamic]^Tile
     if depth > MAX_DEPTH { return }
     cell := &board.cells[y * board.width + x]
@@ -159,18 +160,39 @@ wave_function_collapse :: proc(board: Board) -> bool {
 }
 
 draw_board :: proc(board: Board, x, y: i32) {
+    COLOR_INDEX :: TILE_SIZE * TILE_SIZE / 2 + 1
+    blend_tiles :: proc(tiles: []^Tile) -> rl.Color {
+        if len(tiles) <= 0 { return rl.BLACK }
+        total_freq := 0
+        weighted_sum := [4]int{}
+        for tile in tiles {
+            total_freq += tile.frequency
+            color: [4]int
+            color.r = cast(int)tile.pixels[COLOR_INDEX].r
+            color.g = cast(int)tile.pixels[COLOR_INDEX].g
+            color.b = cast(int)tile.pixels[COLOR_INDEX].b
+            color.a = cast(int)tile.pixels[COLOR_INDEX].a
+            weighted_sum += color * tile.frequency
+        }
+        avg := weighted_sum / total_freq
+        final: rl.Color
+        final.r = cast(u8)avg.r
+        final.g = cast(u8)avg.g
+        final.b = cast(u8)avg.b
+        final.a = cast(u8)avg.a
+        return final
+    }
+
     for i in 0..<board.height {
         for j in 0..<board.width {
             cell := board.cells[i * board.width + j]
-            if cell.collapsed {
-                // fmt.println(cell)
-                rl.DrawRectangle(x + PIXEL_SCALE*i32(j), 
-                    y + PIXEL_SCALE*i32(i),
-                    PIXEL_SCALE,
-                    PIXEL_SCALE,
-                    cell.possible_tiles[0].pixels[5],
-                )
-            }
+            color := cell.possible_tiles[0].pixels[COLOR_INDEX] if cell.collapsed else blend_tiles(cell.possible_tiles[:])
+            rl.DrawRectangle(x + PIXEL_SCALE*i32(j), 
+                y + PIXEL_SCALE*i32(i),
+                PIXEL_SCALE,
+                PIXEL_SCALE,
+                color,
+            )
         }
     }
 }
@@ -236,7 +258,6 @@ main :: proc() {
         }
 
         output_x := window_width - (OUTPUT_WIDTH * PIXEL_SCALE) - PADDING
-        DrawRectangle(output_x, PADDING, OUTPUT_WIDTH * PIXEL_SCALE, OUTPUT_HEIGHT * PIXEL_SCALE, BLACK)
         draw_board(board, output_x, PADDING)
         DrawRectangleLines(output_x, PADDING, OUTPUT_WIDTH * PIXEL_SCALE, OUTPUT_HEIGHT * PIXEL_SCALE, WHITE)
 
