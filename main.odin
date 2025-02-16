@@ -4,6 +4,7 @@ import rl "vendor:raylib"
 import "core:fmt"
 import "core:strings"
 import "core:slice"
+import "core:math"
 import "core:math/rand"
 import "core:time"
 
@@ -59,14 +60,33 @@ delete_board :: proc(board: Board) {
     delete(board.cells)
 }
 
-cell_entropy :: proc(cell: Cell) -> int {
-    return len(cell.possible_tiles)
+cell_entropy :: proc(cell: Cell) -> f32 {
+    total_freq: f32 = 0
+    freq_log_sum: f32 = 0
+    for tile in cell.possible_tiles {
+        freq: f32 = f32(tile.frequency)
+        total_freq += freq
+        freq_log_sum += freq * math.log2(freq)
+    }
+    return math.log2(total_freq) - freq_log_sum / total_freq
 }
 
 cell_collapse :: proc(cell: ^Cell) {
-    tile := rand.choice(cell.possible_tiles[:])
+    total_freq := 0
+    for tile in cell.possible_tiles {
+        total_freq += tile.frequency
+    }
+    n := rand.int_max(total_freq)
+    chosen: ^Tile
+    for tile in cell.possible_tiles {
+        if n - tile.frequency < 0 {
+            chosen = tile
+            break
+        }
+        n -= tile.frequency
+    }
     clear(&cell.possible_tiles)
-    append(&cell.possible_tiles, tile)
+    append(&cell.possible_tiles, chosen)
 }
 
 cell_reduce_entropy :: proc(cell: ^Cell, from_adj: []^Tile) {
@@ -164,7 +184,7 @@ main :: proc() {
     SetTargetFPS(60)
     SetWindowState(ConfigFlags{ .WINDOW_RESIZABLE })
 
-    image := LoadImage("samples/MoreFlowers.png")
+    image := LoadImage("samples/Flowers.png")
     defer UnloadImage(image)
     image_texture := LoadTextureFromImage(image)
     defer UnloadTexture(image_texture)
@@ -172,11 +192,19 @@ main :: proc() {
     tiles := make_tiles(image)
     defer delete_tiles(tiles)
 
+    // for tile, i in tiles {
+    //     fmt.println("Tile", i)
+    //     fmt.println("Pixels", tile.pixels)
+    //     fmt.println("Frequency", tile.frequency)
+    //     fmt.println("Adj", len(tile.adjacencies))
+    // }
+
     board := make_board(tiles, OUTPUT_WIDTH, OUTPUT_HEIGHT)
     defer delete_board(board)
 
     for !WindowShouldClose() {
         window_width := GetRenderWidth()
+        window_height := GetRenderHeight()
         if !wave_function_collapse(board) {
             delete_board(board)
             board = make_board(tiles, OUTPUT_WIDTH, OUTPUT_HEIGHT)
@@ -196,7 +224,19 @@ main :: proc() {
         DrawTexturePro(image_texture, sample_source_rect, sample_dest_rect, {0, 0}, 0, WHITE)
         DrawRectangleLinesEx(sample_dest_rect, 1, WHITE)
 
+        tile_x: i32 = PADDING
+        tile_y: i32 = cast(i32)sample_dest_rect.height + PADDING*2
+        for tile in tiles {
+            draw_tile(tile, tile_x, tile_y)
+            tile_y += TILE_SIZE*PIXEL_SCALE + PADDING
+            if tile_y > window_height - (TILE_SIZE*PIXEL_SCALE + PADDING) {
+                tile_y = cast(i32)sample_dest_rect.height + PADDING*2
+                tile_x += TILE_SIZE*PIXEL_SCALE + PADDING
+            }
+        }
+
         output_x := window_width - (OUTPUT_WIDTH * PIXEL_SCALE) - PADDING
+        DrawRectangle(output_x, PADDING, OUTPUT_WIDTH * PIXEL_SCALE, OUTPUT_HEIGHT * PIXEL_SCALE, BLACK)
         draw_board(board, output_x, PADDING)
         DrawRectangleLines(output_x, PADDING, OUTPUT_WIDTH * PIXEL_SCALE, OUTPUT_HEIGHT * PIXEL_SCALE, WHITE)
 

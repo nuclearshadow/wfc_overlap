@@ -5,10 +5,11 @@ import rl "vendor:raylib"
 Tile :: struct {
     pixels: [TILE_SIZE * TILE_SIZE]rl.Color,
     adjacencies: [Direction][dynamic]^Tile,
+    frequency: int
 }
 
 tile_from_image :: proc(x, y: int, image_pixels: [^]rl.Color, image_width, image_height: int) -> Tile {
-    tile: Tile = {}
+    tile: Tile = { frequency = 1 }
 
     for i in 0..<TILE_SIZE {
         for j in 0..<TILE_SIZE {
@@ -36,12 +37,19 @@ make_tiles :: proc(image: rl.Image) -> []Tile {
         return true
     }
     
-    tiles: []Tile = make([]Tile, image.width * image.height)
+    tiles: [dynamic]Tile
     image_pixels := rl.LoadImageColors(image)
     defer rl.UnloadImageColors(image_pixels)
 
-    for i in 0..<len(tiles) {
-        tiles[i] = tile_from_image(i % auto_cast image.width, i / auto_cast image.width, image_pixels, auto_cast image.width, auto_cast image.height)
+    outer: for i in 0..< image.width * image.height {
+        tile := tile_from_image(int(i % image.width), int(i / image.width), image_pixels, auto_cast image.width, auto_cast image.height)
+        for &other in tiles {
+            if tile.pixels == other.pixels {
+                other.frequency += 1
+                continue outer
+            }
+        }
+        append(&tiles, tile)
     }
 
     for &tile in tiles {
@@ -54,7 +62,7 @@ make_tiles :: proc(image: rl.Image) -> []Tile {
         }
     }
 
-    return tiles
+    return tiles[:]
 }
 
 delete_tiles :: proc(tiles: []Tile) {
